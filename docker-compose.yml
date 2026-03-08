@@ -1,0 +1,100 @@
+version: "3.9"
+
+services:
+
+  # ── Ollama (LLM) ─────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: harmony-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    configs:
+      - source: ollama_entrypoint
+        target: /entrypoint.sh
+        mode: 0755
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── FastAPI Backend ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: harmony-backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - audio_outputs:/app/outputs
+      - db_data:/app/db
+      - hf_cache:/root/.cache/huggingface   # MusicGen 모델 캐시 (재시작 시 재다운로드 방지)
+      - torch_cache:/root/.cache/torch       # Demucs 모델 캐시
+      - chromadb_data:/app/chromadb_data     # ChromaDB 벡터 저장소
+      - st_cache:/root/.cache/torch/sentence_transformers  # sentence-transformers 모델 캐시
+    environment:
+      - DATABASE_URL=sqlite:////app/db/music_studio.db
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_CHAT_MODEL=llama3.2
+      - MUSIC_OUTPUT_PATH=/app/outputs
+      - MAX_MUSIC_DURATION=60
+      - TREND_ENABLED=true
+      - TREND_CACHE_TTL=86400
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - LOG_LEVEL=INFO
+      # YouTube Learning System
+      - YOUTUBE_LEARNING_ENABLED=true
+      - YOUTUBE_COLLECTION_INTERVAL_HOURS=6
+      - YOUTUBE_MAX_VIDEOS_PER_RUN=20
+      - YOUTUBE_AUDIO_KEEP=false
+      - YOUTUBE_TEMP_PATH=/app/outputs/youtube_temp
+      - CHROMADB_PATH=/app/chromadb_data
+      - CHROMADB_COLLECTION_NAME=music_knowledge
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - RAG_TOP_K=5
+      - RAG_ENABLED=true
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── React Frontend (Nginx) ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: harmony-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  ollama_models:    # Ollama LLM 모델
+  audio_outputs:    # 생성된 WAV 파일
+  db_data:          # SQLite DB
+  hf_cache:         # HuggingFace 모델 캐시 (MusicGen)
+  torch_cache:      # Torch Hub 캐시 (Demucs)
+  chromadb_data:    # ChromaDB 벡터 저장소
+  st_cache:         # sentence-transformers 모델 캐시
+
+# ── Configs ───────────────────────────────────────────────────────────────────
+configs:
+  ollama_entrypoint:
+    file: ./docker/ollama-entrypoint.sh

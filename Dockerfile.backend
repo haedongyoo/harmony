@@ -1,0 +1,67 @@
+FROM python:3.9-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    pkg-config \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# ── Core API deps ──────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "fastapi==0.111.0" \
+    "uvicorn[standard]==0.30.1" \
+    "python-multipart==0.0.9" \
+    "sqlalchemy>=2.0.36" \
+    "aiosqlite==0.20.0" \
+    "pydantic-settings==2.3.0" \
+    "python-dotenv==1.0.1" \
+    "httpx==0.27.0" \
+    "aiohttp==3.9.5" \
+    "pydub==0.25.1"
+
+# ── PyTorch CPU ────────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir torch==2.1.0 torchaudio==2.1.0
+
+# ── audiocraft (no-deps first, then manual deps) ───────────────────────────────
+RUN pip install --no-cache-dir \
+    "git+https://github.com/facebookresearch/audiocraft.git" \
+    --no-deps
+
+RUN pip install --no-cache-dir \
+    einops encodec "spacy==3.7.6" flashy num2words \
+    torchmetrics "torchtext==0.16.0" "torchvision==0.16.0" \
+    "transformers==4.37.2" \
+    pystoi sentencepiece soundfile torchdiffeq \
+    "hydra-core>=1.1" librosa pesq protobuf hydra_colorlog \
+    av
+
+# ── demucs ────────────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir demucs
+
+# ── xformers stub (real xformers는 CPU/macOS 빌드 불가 → torch fallback) ────
+COPY docker/xformers_stub/ /usr/local/lib/python3.9/site-packages/xformers/
+
+# ── YouTube Learning System ───────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "yt-dlp>=2024.1.0" \
+    "chromadb>=0.4.22" \
+    "sentence-transformers>=2.2.2" \
+    "librosa>=0.10.1" \
+    "apscheduler>=3.10.4" \
+    "soundfile>=0.12.1"
+
+# ── App code ──────────────────────────────────────────────────────────────────
+COPY App/ ./App/
+
+RUN mkdir -p /app/outputs /app/db /app/chromadb_data /app/outputs/youtube_temp
+
+EXPOSE 8001
+
+CMD ["uvicorn", "App.main:app", "--host", "0.0.0.0", "--port", "8001"]
